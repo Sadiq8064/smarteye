@@ -1,6 +1,5 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
-import uuid, json, os, requests, jwt, datetime
+import uuid, json, os, requests
 from threading import Lock
 
 app = FastAPI()
@@ -14,9 +13,9 @@ os.makedirs(DATA_DIR, exist_ok=True)
 file_lock = Lock()
 active_connections = {}
 
-# ================= COURIER CONFIG =================
-COURIER_AUTH_TOKEN = "pk_test_TN18M50G4S4H77JB1XW3ZR9DMB8W"
-JWT_SECRET = "super_secret_jwt_key_change_later_please_12345"
+# ================= ONESIGNAL CONFIG =================
+ONESIGNAL_APP_ID = os.getenv("ONESIGNAL_APP_ID", "86ac2091-e180-4e1a-b4b3-cf25e0fe7042")
+ONESIGNAL_API_KEY = os.getenv("ONESIGNAL_API_KEY", "os_v2_app_q2wcbepbqbhbvnftz4s6b7tqiimqyhhc2kkepv4x7kkvw3fkhfbfo6tmnbhsmmjf6rpc24sktsnegljjpnj5x5g2pq4vtv73ltdvwzi")
 
 # ================= UTIL FUNCTIONS =================
 
@@ -31,34 +30,22 @@ def save_json(path, data):
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
 
-def generate_courier_jwt(user_id: str):
-    payload = {
-        "sub": user_id,
-        "iat": datetime.datetime.utcnow(),
-        "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=1),
-        "scope": "inbox:read inbox:write"
-    }
-    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
-
-def send_courier_notification(user_ids, title, body, data=None):
+def send_push_notification(user_ids, title, body, data=None):
     if not user_ids:
         return
 
-    url = "https://api.courier.com/send"
+    url = "https://onesignal.com/api/v1/notifications"
     headers = {
-        "Authorization": f"Bearer {COURIER_AUTH_TOKEN}",
+        "Authorization": f"Basic {ONESIGNAL_API_KEY}",
         "Content-Type": "application/json"
     }
 
     payload = {
-        "message": {
-            "to": {"user_ids": user_ids},
-            "content": {
-                "title": title,
-                "body": body
-            },
-            "data": data or {}
-        }
+        "app_id": ONESIGNAL_APP_ID,
+        "include_external_user_ids": user_ids,
+        "headings": {"en": title},
+        "contents": {"en": body},
+        "data": data or {}
     }
 
     requests.post(url, headers=headers, json=payload)
@@ -94,7 +81,11 @@ def blind_register(name: str, device_id: str, latitude: float, longitude: float)
     }
 
     save_json(BLINDS_FILE, blinds)
-    return {"success": True, "blind_id": blind_id, "blind_code": blind_code}
+    return {
+        "success": True,
+        "blind_id": blind_id,
+        "blind_code": blind_code
+    }
 
 @app.get("/blind/guardians")
 def get_blind_guardians(blind_id: str):
@@ -144,7 +135,7 @@ def delete_blind(blind_id: str):
     save_json(GUARDIANS_FILE, guardians)
     return {"success": True}
 
-# ---------- Blind Helper (SEND NOTIFICATION) ----------
+# ---------- Blind SOS (ONESIGNAL PUSH) ----------
 @app.get("/blind/helper")
 def blind_helper(blind_id: str):
     blinds = load_json(BLINDS_FILE)
@@ -159,7 +150,7 @@ def blind_helper(blind_id: str):
         if gid in guardians
     ]
 
-    send_courier_notification(
+    send_push_notification(
         guardian_users,
         title="🚨 Help Needed",
         body=f"{blinds[blind_id]['name']} needs your help!",
