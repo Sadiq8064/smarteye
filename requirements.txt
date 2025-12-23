@@ -1,0 +1,11 @@
+fastapi==0.110.0
+uvicorn[standard]==0.29.0
+
+# HTTP requests (Courier API)
+requests==2.31.0
+
+# JWT for Courier authentication
+PyJWT==2.8.0
+
+# Optional but recommended for env handling
+python-dotenv==1.0.1
