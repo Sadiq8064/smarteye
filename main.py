@@ -14,9 +14,8 @@ file_lock = Lock()
 active_connections = {}
 
 # ================= ONESIGNAL CONFIG =================
-ONESIGNAL_APP_ID = os.getenv("ONESIGNAL_APP_ID", "86ac2091-e180-4e1a-b4b3-cf25e0fe7042")
-ONESIGNAL_API_KEY = os.getenv("ONESIGNAL_API_KEY", "os_v2_app_q2wcbepbqbhbvnftz4s6b7tqiimqyhhc2kkepv4x7kkvw3fkhfbfo6tmnbhsmmjf6rpc24sktsnegljjpnj5x5g2pq4vtv73ltdvwzi")
-
+ONESIGNAL_APP_ID = "86ac2091-e180-4e1a-b4b3-cf25e0fe7042"
+ONESIGNAL_API_KEY = "os_v2_app_q2wcbepbqbhbvnftz4s6b7tqijd5ltdzemrukvu36u7kgefhy24wgpjihniwx2fjxf5uy4yskeyvjqs4fixgalzgw4vkpg5k3ciwlwa"
 # ================= UTIL FUNCTIONS =================
 
 def load_json(path):
