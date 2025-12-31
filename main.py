@@ -14,8 +14,10 @@ file_lock = Lock()
 active_connections = {}
 
 # ================= ONESIGNAL CONFIG =================
+# Cloud Run injects these from your Environment Variables configuration
 ONESIGNAL_APP_ID = os.getenv("ONESIGNAL_APP_ID")
 ONESIGNAL_API_KEY = os.getenv("ONESIGNAL_API_KEY")
+
 # ================= UTIL FUNCTIONS =================
 
 def load_json(path):
@@ -31,23 +33,40 @@ def save_json(path, data):
 
 def send_push_notification(user_ids, title, body, data=None):
     if not user_ids:
+        print("❌ SKIPPING PUSH: No user_ids provided.")
         return
 
     url = "https://onesignal.com/api/v1/notifications"
+    
+    # Headers must look exactly like this
     headers = {
         "Authorization": f"Basic {ONESIGNAL_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "accept": "application/json"
     }
 
+    # MODERN API PAYLOAD (using aliases)
     payload = {
         "app_id": ONESIGNAL_APP_ID,
-        "include_external_user_ids": user_ids,
+        # 'include_aliases' is the new standard for external IDs in v5+ SDKs
+        "include_aliases": {
+            "external_id": user_ids
+        },
+        "target_channel": "push",
         "headings": {"en": title},
         "contents": {"en": body},
         "data": data or {}
     }
 
-    requests.post(url, headers=headers, json=payload)
+    # Debug logs to verify it works in Cloud Run logs
+    print(f"🚀 SENDING PUSH TO ALIASES: {user_ids}")
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        print(f"📨 ONESIGNAL RESPONSE: {response.status_code}")
+        print(f"📄 RESPONSE BODY: {response.text}")
+    except Exception as e:
+        print(f"🔥 ERROR SENDING PUSH: {e}")
 
 # =================================================
 # ================= BLIND APIs ====================
@@ -143,6 +162,7 @@ def blind_helper(blind_id: str):
     if blind_id not in blinds:
         return {"error": "Blind not found"}
 
+    # NOTE: The helper implementation ensures we send specific guardian IDs
     guardian_users = [
         f"guardian_{gid}"
         for gid in blinds[blind_id]["guardians"]
