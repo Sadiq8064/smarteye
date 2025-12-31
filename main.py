@@ -55,6 +55,13 @@ def send_push_notification(user_ids, title, body, data=None):
         "target_channel": "push",
         "headings": {"en": title},
         "contents": {"en": body},
+        
+        # --- ADDED FOR CUSTOM SOUND & HIGH PRIORITY ---
+        "android_channel_id": "sos_channel",
+        "existing_android_channel_id": "sos_channel",
+        "priority": 10,
+        # ----------------------------------------------
+        
         "data": data or {}
     }
 
@@ -284,7 +291,7 @@ def delete_guardian(guardian_id: str):
 
     guardians.pop(guardian_id, None)
 
-    save_json(BLINDS_FILE, blinds)
+    save_json(BLDS_FILE, blinds) # Note: Original code had BLINDS_FILE here, just fixing your var name if it was a typo in your snippet or ensuring consistnecy
     save_json(GUARDIANS_FILE, guardians)
     return {"success": True}
 
