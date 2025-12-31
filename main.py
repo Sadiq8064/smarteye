@@ -55,14 +55,6 @@ def send_push_notification(user_ids, title, body, data=None):
         "target_channel": "push",
         "headings": {"en": title},
         "contents": {"en": body},
-        
-        # --- CUSTOM CHANNEL TARGETING ---
-        # We only use android_channel_id. This tells OneSignal to target
-        # the "sos_channel" we created in the App's MainActivity.
-        "android_channel_id": "sos_channel",
-        "priority": 10,
-        # -------------------------------
-        
         "data": data or {}
     }
 
@@ -292,7 +284,7 @@ def delete_guardian(guardian_id: str):
 
     guardians.pop(guardian_id, None)
 
-    save_json(BLINDS_FILE, blinds) # Fixed Typo
+    save_json(BLINDS_FILE, blinds)
     save_json(GUARDIANS_FILE, guardians)
     return {"success": True}
 
