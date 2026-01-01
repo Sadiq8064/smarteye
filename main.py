@@ -298,3 +298,17 @@ async def guardian_track(ws: WebSocket, blind_id: str):
             await ws.receive_text()
     except WebSocketDisconnect:
         pass
+# =================================================
+# ============ FULL SYSTEM CLEANUP API ============
+# =================================================
+
+@app.get("/system/cleanup")
+def system_cleanup():
+    save_json(BLINDS_FILE, {})
+    save_json(GUARDIANS_FILE, {})
+    active_connections.clear()
+
+    return {
+        "success": True,
+        "message": "⚠️ ALL DATA CLEANED. System reset completed."
+    }
