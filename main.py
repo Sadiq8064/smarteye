@@ -1,35 +1,39 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 import uuid, json, os, requests
 from threading import Lock
+from pymongo import MongoClient
+from bson import ObjectId
+from datetime import datetime
+import certifi
 
 app = FastAPI()
 
-# ================= FILE SETUP =================
-DATA_DIR = "data"
-BLINDS_FILE = f"{DATA_DIR}/blinds.json"
-GUARDIANS_FILE = f"{DATA_DIR}/guardians.json"
+# ================= MONGODB SETUP =================
+MONGODB_URI = os.getenv("MONGODB_URI", "mongodb+srv://wisdomkagyan_db_user:gqbCoXr99sKOcXEw@cluster0.itxqujm.mongodb.net/?appName=Cluster0")
+client = MongoClient(MONGODB_URI, tlsCAFile=certifi.where())
+db = client.smarteye
 
-os.makedirs(DATA_DIR, exist_ok=True)
-file_lock = Lock()
-active_connections = {}
+# Collections
+blinds_collection = db.blinds
+guardians_collection = db.guardians
+
+# Create indexes
+blinds_collection.create_index("device_id", unique=True)
+blinds_collection.create_index("code", unique=True)
+guardians_collection.create_index("phone", unique=True)
 
 # ================= ONESIGNAL CONFIG =================
-# Cloud Run injects these from your Environment Variables configuration
 ONESIGNAL_APP_ID = os.getenv("ONESIGNAL_APP_ID")
 ONESIGNAL_API_KEY = os.getenv("ONESIGNAL_API_KEY")
 
 # ================= UTIL FUNCTIONS =================
 
-def load_json(path):
-    if not os.path.exists(path):
-        return {}
-    with open(path, "r") as f:
-        return json.load(f)
-
-def save_json(path, data):
-    with file_lock:
-        with open(path, "w") as f:
-            json.dump(data, f, indent=2)
+def serialize_doc(doc):
+    """Convert MongoDB document to JSON serializable format"""
+    if doc and "_id" in doc:
+        doc["id"] = str(doc["_id"])
+        del doc["_id"]
+    return doc
 
 def send_push_notification(user_ids, title, body, data=None):
     if not user_ids:
@@ -38,17 +42,14 @@ def send_push_notification(user_ids, title, body, data=None):
 
     url = "https://onesignal.com/api/v1/notifications"
     
-    # Headers must look exactly like this
     headers = {
         "Authorization": f"Basic {ONESIGNAL_API_KEY}",
         "Content-Type": "application/json",
         "accept": "application/json"
     }
 
-    # MODERN API PAYLOAD (using aliases)
     payload = {
         "app_id": ONESIGNAL_APP_ID,
-        # 'include_aliases' is the new standard for external IDs in v5+ SDKs
         "include_aliases": {
             "external_id": user_ids
         },
@@ -58,7 +59,6 @@ def send_push_notification(user_ids, title, body, data=None):
         "data": data or {}
     }
 
-    # Debug logs to verify it works in Cloud Run logs
     print(f"🚀 SENDING PUSH TO ALIASES: {user_ids}")
     
     try:
@@ -74,109 +74,132 @@ def send_push_notification(user_ids, title, body, data=None):
 
 @app.get("/blind/login")
 def blind_login(device_id: str):
-    blinds = load_json(BLINDS_FILE)
-    for blind in blinds.values():
-        if blind["device_id"] == device_id:
-            return {"exists": True, "data": blind}
+    blind = blinds_collection.find_one({"device_id": device_id})
+    if blind:
+        return {"exists": True, "data": serialize_doc(blind)}
     return {"exists": False}
 
 @app.get("/blind/register")
 def blind_register(name: str, device_id: str, latitude: float, longitude: float):
-    blinds = load_json(BLINDS_FILE)
+    # Check if device already registered
+    existing = blinds_collection.find_one({"device_id": device_id})
+    if existing:
+        raise HTTPException(status_code=400, detail="Device already registered")
 
     blind_id = str(uuid.uuid4())
     blind_code = str(uuid.uuid4())
-
-    blinds[blind_id] = {
-        "id": blind_id,
-        "code": blind_code,
+    
+    blind_data = {
         "name": name,
         "device_id": device_id,
+        "code": blind_code,
         "latitude": latitude,
         "longitude": longitude,
         "active": False,
-        "guardians": []
+        "guardians": [],
+        "created_at": datetime.utcnow(),
+        "updated_at": datetime.utcnow()
     }
-
-    save_json(BLINDS_FILE, blinds)
+    
+    result = blinds_collection.insert_one(blind_data)
+    
     return {
         "success": True,
-        "blind_id": blind_id,
+        "blind_id": str(result.inserted_id),
         "blind_code": blind_code
     }
 
 @app.get("/blind/guardians")
 def get_blind_guardians(blind_id: str):
-    blinds = load_json(BLINDS_FILE)
-    guardians = load_json(GUARDIANS_FILE)
-
-    if blind_id not in blinds:
-        return {"error": "Blind not found"}
-
+    try:
+        blind_obj_id = ObjectId(blind_id)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid blind ID format")
+    
+    blind = blinds_collection.find_one({"_id": blind_obj_id})
+    if not blind:
+        raise HTTPException(status_code=404, detail="Blind not found")
+    
+    guardian_ids = [ObjectId(gid) for gid in blind.get("guardians", [])]
+    guardians = list(guardians_collection.find({"_id": {"$in": guardian_ids}}))
+    
     return [
         {
-            "id": guardians[g]["id"],
-            "name": guardians[g]["name"],
-            "phone": guardians[g]["phone"]
+            "id": str(g["_id"]),
+            "name": g["name"],
+            "phone": g["phone"]
         }
-        for g in blinds[blind_id]["guardians"]
-        if g in guardians
+        for g in guardians
     ]
 
 @app.get("/blind/remove-guardian")
 def blind_remove_guardian(blind_id: str, guardian_id: str):
-    blinds = load_json(BLINDS_FILE)
-    guardians = load_json(GUARDIANS_FILE)
-
-    if blind_id not in blinds or guardian_id not in guardians:
-        return {"error": "Invalid ID"}
-
-    blinds[blind_id]["guardians"].remove(guardian_id)
-    guardians[guardian_id]["blind_persons"].remove(blind_id)
-
-    save_json(BLINDS_FILE, blinds)
-    save_json(GUARDIANS_FILE, guardians)
+    try:
+        blind_obj_id = ObjectId(blind_id)
+        guardian_obj_id = ObjectId(guardian_id)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+    
+    # Remove guardian from blind
+    blinds_collection.update_one(
+        {"_id": blind_obj_id},
+        {"$pull": {"guardians": guardian_id}}
+    )
+    
+    # Remove blind from guardian
+    guardians_collection.update_one(
+        {"_id": guardian_obj_id},
+        {"$pull": {"blind_persons": blind_id}}
+    )
+    
     return {"success": True}
 
 @app.get("/blind/delete")
 def delete_blind(blind_id: str):
-    blinds = load_json(BLINDS_FILE)
-    guardians = load_json(GUARDIANS_FILE)
-
-    for g in guardians.values():
-        if blind_id in g["blind_persons"]:
-            g["blind_persons"].remove(blind_id)
-
-    blinds.pop(blind_id, None)
-
-    save_json(BLINDS_FILE, blinds)
-    save_json(GUARDIANS_FILE, guardians)
+    try:
+        blind_obj_id = ObjectId(blind_id)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid blind ID format")
+    
+    # Get blind to find its guardians
+    blind = blinds_collection.find_one({"_id": blind_obj_id})
+    if blind:
+        # Remove this blind from all guardians
+        guardians_collection.update_many(
+            {"_id": {"$in": [ObjectId(gid) for gid in blind.get("guardians", [])]}},
+            {"$pull": {"blind_persons": blind_id}}
+        )
+    
+    # Delete the blind
+    blinds_collection.delete_one({"_id": blind_obj_id})
+    
     return {"success": True}
 
-# ---------- Blind SOS (ONESIGNAL PUSH) ----------
 @app.get("/blind/helper")
 def blind_helper(blind_id: str):
-    blinds = load_json(BLINDS_FILE)
-    guardians = load_json(GUARDIANS_FILE)
-
-    if blind_id not in blinds:
-        return {"error": "Blind not found"}
-
-    # NOTE: The helper implementation ensures we send specific guardian IDs
+    try:
+        blind_obj_id = ObjectId(blind_id)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid blind ID format")
+    
+    blind = blinds_collection.find_one({"_id": blind_obj_id})
+    if not blind:
+        raise HTTPException(status_code=404, detail="Blind not found")
+    
+    # Prepare guardian user IDs for push notification
     guardian_users = [
         f"guardian_{gid}"
-        for gid in blinds[blind_id]["guardians"]
-        if gid in guardians
+        for gid in blind.get("guardians", [])
     ]
 
     send_push_notification(
         guardian_users,
         title="🚨 Help Needed",
-        body=f"{blinds[blind_id]['name']} needs your help!",
+        body=f"{blind['name']} needs your help!",
         data={
             "blind_id": blind_id,
-            "latitude": blinds[blind_id]["latitude"],
-            "longitude": blinds[blind_id]["longitude"]
+            "latitude": blind["latitude"],
+            "longitude": blind["longitude"]
         }
     )
 
@@ -185,21 +208,39 @@ def blind_helper(blind_id: str):
 @app.websocket("/ws/blind/{blind_id}")
 async def blind_ws(ws: WebSocket, blind_id: str):
     await ws.accept()
-    active_connections[blind_id] = ws
-
-    blinds = load_json(BLINDS_FILE)
-    blinds[blind_id]["active"] = True
-    save_json(BLINDS_FILE, blinds)
-
+    
+    try:
+        blind_obj_id = ObjectId(blind_id)
+    except:
+        await ws.close(code=1008, reason="Invalid blind ID")
+        return
+    
+    # Update blind as active
+    blinds_collection.update_one(
+        {"_id": blind_obj_id},
+        {"$set": {"active": True, "updated_at": datetime.utcnow()}}
+    )
+    
     try:
         while True:
             data = await ws.receive_json()
-            blinds[blind_id]["latitude"] = data["latitude"]
-            blinds[blind_id]["longitude"] = data["longitude"]
-            save_json(BLINDS_FILE, blinds)
+            # Update location
+            blinds_collection.update_one(
+                {"_id": blind_obj_id},
+                {"$set": {
+                    "latitude": data["latitude"],
+                    "longitude": data["longitude"],
+                    "updated_at": datetime.utcnow()
+                }}
+            )
     except WebSocketDisconnect:
-        blinds[blind_id]["active"] = False
-        save_json(BLINDS_FILE, blinds)
+        # Set blind as inactive
+        blinds_collection.update_one(
+            {"_id": blind_obj_id},
+            {"$set": {"active": False, "updated_at": datetime.utcnow()}}
+        )
+    except Exception as e:
+        print(f"WebSocket error: {e}")
 
 # =================================================
 # ================= GUARDIAN APIs =================
@@ -207,108 +248,193 @@ async def blind_ws(ws: WebSocket, blind_id: str):
 
 @app.get("/guardian/login")
 def guardian_login(phone: str):
-    guardians = load_json(GUARDIANS_FILE)
-    for guardian in guardians.values():
-        if guardian["phone"] == phone:
-            return {"exists": True, "data": guardian}
+    guardian = guardians_collection.find_one({"phone": phone})
+    if guardian:
+        return {"exists": True, "data": serialize_doc(guardian)}
     return {"exists": False}
 
 @app.get("/guardian/register")
 def guardian_register(name: str, phone: str):
-    guardians = load_json(GUARDIANS_FILE)
+    # Check if phone already registered
+    existing = guardians_collection.find_one({"phone": phone})
+    if existing:
+        raise HTTPException(status_code=400, detail="Phone number already registered")
 
-    guardian_id = str(uuid.uuid4())
-    guardians[guardian_id] = {
-        "id": guardian_id,
+    guardian_data = {
         "name": name,
         "phone": phone,
-        "blind_persons": []
+        "blind_persons": [],
+        "created_at": datetime.utcnow(),
+        "updated_at": datetime.utcnow()
     }
-
-    save_json(GUARDIANS_FILE, guardians)
-    return {"success": True, "guardian_id": guardian_id}
+    
+    result = guardians_collection.insert_one(guardian_data)
+    
+    return {
+        "success": True,
+        "guardian_id": str(result.inserted_id)
+    }
 
 @app.get("/guardian/blinds")
 def get_guardian_blinds(guardian_id: str):
-    guardians = load_json(GUARDIANS_FILE)
-    blinds = load_json(BLINDS_FILE)
-
+    try:
+        guardian_obj_id = ObjectId(guardian_id)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid guardian ID format")
+    
+    guardian = guardians_collection.find_one({"_id": guardian_obj_id})
+    if not guardian:
+        raise HTTPException(status_code=404, detail="Guardian not found")
+    
+    blind_ids = [ObjectId(bid) for bid in guardian.get("blind_persons", [])]
+    blinds = list(blinds_collection.find({"_id": {"$in": blind_ids}}))
+    
     return [
         {
-            "id": blinds[b]["id"],
-            "name": blinds[b]["name"],
-            "active": blinds[b]["active"],
-            "latitude": blinds[b]["latitude"],
-            "longitude": blinds[b]["longitude"]
+            "id": str(b["_id"]),
+            "name": b["name"],
+            "active": b.get("active", False),
+            "latitude": b["latitude"],
+            "longitude": b["longitude"],
+            "last_updated": b.get("updated_at")
         }
-        for b in guardians.get(guardian_id, {}).get("blind_persons", [])
-        if b in blinds
+        for b in blinds
     ]
 
 @app.get("/guardian/add-blind")
 def guardian_add_blind(guardian_id: str, blind_code: str):
-    blinds = load_json(BLINDS_FILE)
-    guardians = load_json(GUARDIANS_FILE)
-
-    blind = next((b for b in blinds.values() if b["code"] == blind_code), None)
+    try:
+        guardian_obj_id = ObjectId(guardian_id)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid guardian ID format")
+    
+    # Find blind by code
+    blind = blinds_collection.find_one({"code": blind_code})
     if not blind:
-        return {"error": "Invalid blind code"}
-
-    blind["guardians"].append(guardian_id)
-    guardians[guardian_id]["blind_persons"].append(blind["id"])
-
-    save_json(BLINDS_FILE, blinds)
-    save_json(GUARDIANS_FILE, guardians)
+        raise HTTPException(status_code=404, detail="Invalid blind code")
+    
+    blind_id = str(blind["_id"])
+    
+    # Check if already added
+    guardian = guardians_collection.find_one({"_id": guardian_obj_id})
+    if guardian and blind_id in guardian.get("blind_persons", []):
+        raise HTTPException(status_code=400, detail="Blind already added")
+    
+    # Add guardian to blind
+    blinds_collection.update_one(
+        {"_id": blind["_id"]},
+        {"$addToSet": {"guardians": guardian_id}}
+    )
+    
+    # Add blind to guardian
+    guardians_collection.update_one(
+        {"_id": guardian_obj_id},
+        {"$addToSet": {"blind_persons": blind_id}}
+    )
+    
     return {"success": True}
 
 @app.get("/guardian/remove-blind")
 def guardian_remove_blind(guardian_id: str, blind_id: str):
-    blinds = load_json(BLINDS_FILE)
-    guardians = load_json(GUARDIANS_FILE)
-
-    guardians[guardian_id]["blind_persons"].remove(blind_id)
-    blinds[blind_id]["guardians"].remove(guardian_id)
-
-    save_json(BLINDS_FILE, blinds)
-    save_json(GUARDIANS_FILE, guardians)
+    try:
+        guardian_obj_id = ObjectId(guardian_id)
+        blind_obj_id = ObjectId(blind_id)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+    
+    # Remove blind from guardian
+    guardians_collection.update_one(
+        {"_id": guardian_obj_id},
+        {"$pull": {"blind_persons": blind_id}}
+    )
+    
+    # Remove guardian from blind
+    blinds_collection.update_one(
+        {"_id": blind_obj_id},
+        {"$pull": {"guardians": guardian_id}}
+    )
+    
     return {"success": True}
 
 @app.get("/guardian/delete")
 def delete_guardian(guardian_id: str):
-    blinds = load_json(BLINDS_FILE)
-    guardians = load_json(GUARDIANS_FILE)
-
-    for b in blinds.values():
-        if guardian_id in b["guardians"]:
-            b["guardians"].remove(guardian_id)
-
-    guardians.pop(guardian_id, None)
-
-    save_json(BLINDS_FILE, blinds)
-    save_json(GUARDIANS_FILE, guardians)
+    try:
+        guardian_obj_id = ObjectId(guardian_id)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid guardian ID format")
+    
+    # Get guardian to find their blinds
+    guardian = guardians_collection.find_one({"_id": guardian_obj_id})
+    if guardian:
+        # Remove this guardian from all blinds
+        blind_ids = [ObjectId(bid) for bid in guardian.get("blind_persons", [])]
+        blinds_collection.update_many(
+            {"_id": {"$in": blind_ids}},
+            {"$pull": {"guardians": guardian_id}}
+        )
+    
+    # Delete the guardian
+    guardians_collection.delete_one({"_id": guardian_obj_id})
+    
     return {"success": True}
 
 @app.websocket("/ws/guardian/track/{blind_id}")
 async def guardian_track(ws: WebSocket, blind_id: str):
     await ws.accept()
+    
+    try:
+        blind_obj_id = ObjectId(blind_id)
+    except:
+        await ws.close(code=1008, reason="Invalid blind ID")
+        return
+    
     try:
         while True:
-            blinds = load_json(BLINDS_FILE)
-            await ws.send_json(blinds.get(blind_id))
+            blind = blinds_collection.find_one({"_id": blind_obj_id})
+            if blind:
+                await ws.send_json(serialize_doc(blind))
+            else:
+                await ws.send_json({"error": "Blind not found"})
+            
+            # Wait for acknowledgment (ping)
             await ws.receive_text()
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        print(f"Tracking WebSocket error: {e}")
+
 # =================================================
 # ============ FULL SYSTEM CLEANUP API ============
 # =================================================
 
 @app.get("/system/cleanup")
 def system_cleanup():
-    save_json(BLINDS_FILE, {})
-    save_json(GUARDIANS_FILE, {})
-    active_connections.clear()
-
+    blinds_collection.delete_many({})
+    guardians_collection.delete_many({})
+    
     return {
         "success": True,
         "message": "⚠️ ALL DATA CLEANED. System reset completed."
     }
+
+# =================================================
+# ============ HEALTH CHECK API ============
+# =================================================
+
+@app.get("/health")
+def health_check():
+    try:
+        # Test database connection
+        db.command("ping")
+        return {
+            "status": "healthy",
+            "database": "connected",
+            "blinds_count": blinds_collection.count_documents({}),
+            "guardians_count": guardians_collection.count_documents({})
+        }
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "database": "disconnected",
+            "error": str(e)
+        }
