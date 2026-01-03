@@ -23,7 +23,6 @@ guardians_collection = db.guardians
 
 # Create indexes
 blinds_collection.create_index("email", unique=True)
-blinds_collection.create_index("code", unique=True)
 guardians_collection.create_index("email", unique=True)
 guardians_collection.create_index("phone", unique=True)
 
@@ -159,13 +158,10 @@ def blind_register(
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
     
-    blind_code = str(uuid.uuid4())
-    
     blind_data = {
         "name": name,
         "email": email,
         "password": hash_password(password),
-        "code": blind_code,
         "latitude": latitude,
         "longitude": longitude,
         "active": False,
@@ -179,7 +175,6 @@ def blind_register(
     return {
         "success": True,
         "blind_id": str(result.inserted_id),
-        "blind_code": blind_code,
         "message": "Registration successful"
     }
 
@@ -527,8 +522,7 @@ def get_guardian_blinds(
             "active": blind_data.get("active", False),
             "latitude": blind_data["latitude"],
             "longitude": blind_data["longitude"],
-            "last_updated": blind_data.get("updated_at"),
-            "blind_code": blind_data.get("code")  # Include code for reference
+            "last_updated": blind_data.get("updated_at")
         })
     
     return blind_list
@@ -536,20 +530,19 @@ def get_guardian_blinds(
 @app.get("/guardian/add-blind")
 def guardian_add_blind(
     guardian_id: str = Query(..., description="Guardian ID"),
-    blind_code: str = Query(..., description="Blind user's unique code")
+    blind_id: str = Query(..., description="Blind user ID to add")
 ):
-    """Add a blind user using blind code"""
+    """Add a blind user using blind ID"""
     try:
         guardian_obj_id = ObjectId(guardian_id)
+        blind_obj_id = ObjectId(blind_id)
     except:
-        raise HTTPException(status_code=400, detail="Invalid guardian ID format")
+        raise HTTPException(status_code=400, detail="Invalid ID format")
     
-    # Find blind by code
-    blind = blinds_collection.find_one({"code": blind_code})
+    # Find blind by ID
+    blind = blinds_collection.find_one({"_id": blind_obj_id})
     if not blind:
-        raise HTTPException(status_code=404, detail="Invalid blind code")
-    
-    blind_id = str(blind["_id"])
+        raise HTTPException(status_code=404, detail="Blind user not found")
     
     # Check if already added
     guardian = guardians_collection.find_one({"_id": guardian_obj_id})
@@ -558,7 +551,7 @@ def guardian_add_blind(
     
     # Add guardian to blind
     blinds_collection.update_one(
-        {"_id": blind["_id"]},
+        {"_id": blind_obj_id},
         {"$addToSet": {"guardians": guardian_id}}
     )
     
