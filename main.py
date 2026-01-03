@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
 import uuid, json, os, requests
 from pymongo import MongoClient
 from bson import ObjectId
@@ -6,7 +6,6 @@ from datetime import datetime
 import certifi
 import hashlib
 import re
-from typing import Optional
 
 app = FastAPI()
 
@@ -93,8 +92,12 @@ def send_push_notification(user_ids, title, body, data=None):
 # ================= USER AUTH APIs ================
 # =================================================
 
-@app.post("/auth/login")
-def login(email: str, password: str, user_type: str = "blind"):
+@app.get("/auth/login")
+def login(
+    email: str = Query(..., description="User email"),
+    password: str = Query(..., description="User password"),
+    user_type: str = Query("blind", description="User type: 'blind' or 'guardian'")
+):
     """Login for both blind users and guardians"""
     
     if not is_valid_email(email):
@@ -131,13 +134,13 @@ def login(email: str, password: str, user_type: str = "blind"):
 # ================= BLIND APIs ====================
 # =================================================
 
-@app.post("/blind/register")
+@app.get("/blind/register")
 def blind_register(
-    name: str, 
-    email: str, 
-    password: str,
-    latitude: float = 0.0,
-    longitude: float = 0.0
+    name: str = Query(..., description="Blind user name"),
+    email: str = Query(..., description="Blind user email"),
+    password: str = Query(..., description="Blind user password"),
+    latitude: float = Query(0.0, description="Initial latitude"),
+    longitude: float = Query(0.0, description="Initial longitude")
 ):
     """Register a new blind user with email, password, name, and location"""
     
@@ -153,7 +156,6 @@ def blind_register(
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
     
-    blind_id = str(uuid.uuid4())
     blind_code = str(uuid.uuid4())
     
     blind_data = {
@@ -179,7 +181,9 @@ def blind_register(
     }
 
 @app.get("/blind/profile")
-def get_blind_profile(blind_id: str):
+def get_blind_profile(
+    blind_id: str = Query(..., description="Blind user ID")
+):
     """Get blind user profile"""
     try:
         blind_obj_id = ObjectId(blind_id)
@@ -196,12 +200,12 @@ def get_blind_profile(blind_id: str):
     
     return {"success": True, "data": blind_data}
 
-@app.put("/blind/update")
+@app.get("/blind/update")
 def update_blind_profile(
-    blind_id: str,
-    name: Optional[str] = None,
-    latitude: Optional[float] = None,
-    longitude: Optional[float] = None
+    blind_id: str = Query(..., description="Blind user ID"),
+    name: str = Query(None, description="New name"),
+    latitude: float = Query(None, description="New latitude"),
+    longitude: float = Query(None, description="New longitude")
 ):
     """Update blind user profile"""
     try:
@@ -230,7 +234,9 @@ def update_blind_profile(
     return {"success": True, "message": "Profile updated successfully"}
 
 @app.get("/blind/guardians")
-def get_blind_guardians(blind_id: str):
+def get_blind_guardians(
+    blind_id: str = Query(..., description="Blind user ID")
+):
     """Get all guardians associated with a blind user"""
     try:
         blind_obj_id = ObjectId(blind_id)
@@ -259,7 +265,10 @@ def get_blind_guardians(blind_id: str):
     return guardian_list
 
 @app.get("/blind/remove-guardian")
-def blind_remove_guardian(blind_id: str, guardian_id: str):
+def blind_remove_guardian(
+    blind_id: str = Query(..., description="Blind user ID"),
+    guardian_id: str = Query(..., description="Guardian ID to remove")
+):
     """Remove a guardian from blind user's guardians list"""
     try:
         blind_obj_id = ObjectId(blind_id)
@@ -282,7 +291,9 @@ def blind_remove_guardian(blind_id: str, guardian_id: str):
     return {"success": True, "message": "Guardian removed successfully"}
 
 @app.get("/blind/delete")
-def delete_blind(blind_id: str):
+def delete_blind(
+    blind_id: str = Query(..., description="Blind user ID")
+):
     """Delete blind user account"""
     try:
         blind_obj_id = ObjectId(blind_id)
@@ -304,7 +315,9 @@ def delete_blind(blind_id: str):
     return {"success": True, "message": "Account deleted successfully"}
 
 @app.get("/blind/helper")
-def blind_helper(blind_id: str):
+def blind_helper(
+    blind_id: str = Query(..., description="Blind user ID")
+):
     """Send SOS notification to all guardians"""
     try:
         blind_obj_id = ObjectId(blind_id)
@@ -376,12 +389,12 @@ async def blind_ws(ws: WebSocket, blind_id: str):
 # ================= GUARDIAN APIs =================
 # =================================================
 
-@app.post("/guardian/register")
+@app.get("/guardian/register")
 def guardian_register(
-    name: str, 
-    email: str, 
-    password: str,
-    phone: str
+    name: str = Query(..., description="Guardian name"),
+    email: str = Query(..., description="Guardian email"),
+    password: str = Query(..., description="Guardian password"),
+    phone: str = Query(..., description="Guardian phone number")
 ):
     """Register a new guardian with name, email, password, and phone"""
     
@@ -424,7 +437,9 @@ def guardian_register(
     }
 
 @app.get("/guardian/profile")
-def get_guardian_profile(guardian_id: str):
+def get_guardian_profile(
+    guardian_id: str = Query(..., description="Guardian ID")
+):
     """Get guardian profile"""
     try:
         guardian_obj_id = ObjectId(guardian_id)
@@ -441,11 +456,11 @@ def get_guardian_profile(guardian_id: str):
     
     return {"success": True, "data": guardian_data}
 
-@app.put("/guardian/update")
+@app.get("/guardian/update")
 def update_guardian_profile(
-    guardian_id: str,
-    name: Optional[str] = None,
-    phone: Optional[str] = None
+    guardian_id: str = Query(..., description="Guardian ID"),
+    name: str = Query(None, description="New name"),
+    phone: str = Query(None, description="New phone number")
 ):
     """Update guardian profile"""
     try:
@@ -481,7 +496,9 @@ def update_guardian_profile(
     return {"success": True, "message": "Profile updated successfully"}
 
 @app.get("/guardian/blinds")
-def get_guardian_blinds(guardian_id: str):
+def get_guardian_blinds(
+    guardian_id: str = Query(..., description="Guardian ID")
+):
     """Get all blind users associated with a guardian"""
     try:
         guardian_obj_id = ObjectId(guardian_id)
@@ -514,7 +531,10 @@ def get_guardian_blinds(guardian_id: str):
     return blind_list
 
 @app.get("/guardian/add-blind")
-def guardian_add_blind(guardian_id: str, blind_code: str):
+def guardian_add_blind(
+    guardian_id: str = Query(..., description="Guardian ID"),
+    blind_code: str = Query(..., description="Blind user's unique code")
+):
     """Add a blind user using blind code"""
     try:
         guardian_obj_id = ObjectId(guardian_id)
@@ -553,7 +573,10 @@ def guardian_add_blind(guardian_id: str, blind_code: str):
     }
 
 @app.get("/guardian/remove-blind")
-def guardian_remove_blind(guardian_id: str, blind_id: str):
+def guardian_remove_blind(
+    guardian_id: str = Query(..., description="Guardian ID"),
+    blind_id: str = Query(..., description="Blind user ID to remove")
+):
     """Remove a blind user from guardian's list"""
     try:
         guardian_obj_id = ObjectId(guardian_id)
@@ -576,7 +599,9 @@ def guardian_remove_blind(guardian_id: str, blind_id: str):
     return {"success": True, "message": "Blind user removed successfully"}
 
 @app.get("/guardian/delete")
-def delete_guardian(guardian_id: str):
+def delete_guardian(
+    guardian_id: str = Query(..., description="Guardian ID")
+):
     """Delete guardian account"""
     try:
         guardian_obj_id = ObjectId(guardian_id)
@@ -630,8 +655,12 @@ async def guardian_track(ws: WebSocket, blind_id: str):
 # ================= PASSWORD RESET ================
 # =================================================
 
-@app.post("/auth/reset-password")
-def reset_password(email: str, new_password: str, user_type: str = "blind"):
+@app.get("/auth/reset-password")
+def reset_password(
+    email: str = Query(..., description="User email"),
+    new_password: str = Query(..., description="New password"),
+    user_type: str = Query("blind", description="User type: 'blind' or 'guardian'")
+):
     """Reset password for both blind users and guardians"""
     
     if not is_valid_email(email):
